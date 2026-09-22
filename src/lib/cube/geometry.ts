@@ -107,6 +107,29 @@ export const FACELETS_BY_CUBIE: ReadonlyMap<string, FaceletGeometry[]> = (() => 
   return map;
 })();
 
+/**
+ * Which facelet sits on a given cubie, facing a given direction — the lookup
+ * the renderer needs to color each sticker. Undefined for internal faces.
+ */
+export const FACELET_AT: ReadonlyMap<string, number> = (() => {
+  const map = new Map<string, number>();
+  for (const geometry of FACELET_GEOMETRY) {
+    map.set(`${cubieKey(geometry.position)}|${cubieKey(geometry.normal)}`, geometry.index);
+  }
+  return map;
+})();
+
+/** Facelet index on `position` facing `normal`, or undefined if hidden. */
+export function faceletIndexAt(position: Vec3, normal: Vec3): number | undefined {
+  return FACELET_AT.get(`${cubieKey(position)}|${cubieKey(normal)}`);
+}
+
+/** The six outward directions, for iterating a cubie's faces. */
+export const DIRECTIONS: readonly { normal: Vec3; face: Face }[] = FACES.map((face) => ({
+  face,
+  normal: FACE_NORMALS[face],
+}));
+
 /** Negating a zero coordinate yields -0, which compares unequal to 0. */
 function unsign(n: number): number {
   return n === 0 ? 0 : n;
