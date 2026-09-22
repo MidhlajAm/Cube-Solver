@@ -13,6 +13,7 @@ import CameraScanner from '@/components/scanner/CameraScanner';
 import FaceletNet from '@/components/scanner/FaceletNet';
 import MovePlayer from '@/components/player/MovePlayer';
 import { selectCurrentFacelets, useCubeStore } from '@/store/cubeStore';
+import type { ValidationResult } from '@/lib/cube/validate';
 
 // Three.js is a large dependency and needs the DOM, so it is loaded on the
 // client only and never blocks the first paint.
@@ -40,9 +41,21 @@ export default function Page() {
   const warmUpSolver = useCubeStore((s) => s.warmUpSolver);
   const error = useCubeStore((s) => s.error);
   const clearError = useCubeStore((s) => s.clearError);
+  const faceColors = useCubeStore((s) => s.faceColors);
+  const scanNotice = useCubeStore((s) => s.scanNotice);
+  const clearScanNotice = useCubeStore((s) => s.clearScanNotice);
   const currentFacelets = useCubeStore(selectCurrentFacelets);
 
   const [scanning, setScanning] = useState(false);
+
+  // When a cube is impossible the validator can implicate dozens of stickers,
+  // and ringing most of the net tells the user nothing. Past a handful, fall
+  // back to just the first problem, which is the one worth acting on.
+  const highlighted = validation.ok
+    ? []
+    : validation.badIndices.length > 12
+      ? (validation.issues[0]?.indices ?? [])
+      : validation.badIndices;
 
   // Start building the solver's lookup tables immediately: by the time the user
   // has scanned six faces it is warm, and solving feels instant.
@@ -58,8 +71,13 @@ export default function Page() {
             setScanning(false);
             setPhase('verify');
           }}
-          onComplete={({ facelets, confidence, uncertain: unsure }) => {
-            setScramble(facelets, { confidence, uncertain: unsure });
+          onComplete={({ facelets, confidence, uncertain: unsure, faceColors: palette, notice }) => {
+            setScramble(facelets, {
+              confidence,
+              uncertain: unsure,
+              faceColors: palette,
+              notice,
+            });
             setScanning(false);
             setPhase('verify');
           }}
@@ -124,29 +142,29 @@ export default function Page() {
                   </p>
                 </div>
 
+                {scanNotice && (
+                  <div className="flex items-start justify-between gap-3 rounded-xl border border-sky-900 bg-sky-950/50 p-3">
+                    <p className="text-xs leading-relaxed text-sky-200">{scanNotice}</p>
+                    <button
+                      type="button"
+                      onClick={clearScanNotice}
+                      aria-label="Dismiss"
+                      className="shrink-0 text-sky-300"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                )}
+
                 <FaceletNet
                   facelets={scramble}
                   uncertain={uncertain}
-                  invalid={validation.badIndices}
+                  invalid={highlighted}
+                  colors={faceColors}
                   onChange={setSticker}
                 />
 
-                {!validation.ok && (
-                  <div
-                    role="alert"
-                    className="rounded-xl border border-amber-900 bg-amber-950/50 p-3"
-                  >
-                    <p className="text-sm font-medium text-amber-200">
-                      {validation.issues[0]?.message}
-                    </p>
-                    {validation.issues.length > 1 && (
-                      <p className="mt-1 text-xs text-amber-300/70">
-                        and {validation.issues.length - 1} other problem
-                        {validation.issues.length - 1 === 1 ? '' : 's'}
-                      </p>
-                    )}
-                  </div>
-                )}
+                {!validation.ok && <InvalidCubeHelp validation={validation} />}
 
                 <div className="flex gap-2">
                   <button
@@ -193,7 +211,7 @@ export default function Page() {
                     Cube right now
                   </summary>
                   <div className="mt-3">
-                    <FaceletNet facelets={currentFacelets} editable={false} />
+                    <FaceletNet facelets={currentFacelets} editable={false} colors={faceColors} />
                   </div>
                 </details>
               </>
@@ -202,6 +220,40 @@ export default function Page() {
         </div>
       )}
     </main>
+  );
+}
+
+/**
+ * What to say when the scan cannot be a real cube.
+ *
+ * The validator's own wording is precise but unhelpful on its own: being told
+ * that an orange/green/red corner cannot exist gives no clue about what to do,
+ * and invites the user to start repainting stickers that were read correctly.
+ * The advice comes first; the technical reason stays available underneath.
+ */
+function InvalidCubeHelp({ validation }: { validation: ValidationResult }) {
+  const others = validation.issues.length - 1;
+
+  return (
+    <div role="alert" className="rounded-xl border border-amber-900 bg-amber-950/50 p-3">
+      <p className="text-sm font-medium text-amber-200">
+        These colors can&apos;t make a real cube
+      </p>
+      <p className="mt-1.5 text-xs leading-relaxed text-amber-100/80">
+        A sticker or two was probably misread — tap the ringed ones to set them right. If
+        that does not look like the problem, rescan: keep hold of the cube the same way
+        throughout and turn the whole cube between shots, never just one layer.
+      </p>
+      <details className="mt-2">
+        <summary className="cursor-pointer text-xs text-amber-300/70">
+          What the checker found
+        </summary>
+        <p className="mt-1.5 text-xs leading-relaxed text-amber-300/70">
+          {validation.issues[0]?.message}
+          {others > 0 && ` (and ${others} other problem${others === 1 ? '' : 's'})`}
+        </p>
+      </details>
+    </div>
   );
 }
 
@@ -259,9 +311,9 @@ function Intro({
           <span className="text-emerald-400">Get the solution.</span>
         </h2>
         <p className="mt-3 max-w-md text-sm leading-relaxed text-slate-400">
-          Hold each of the six faces up to your camera. You&apos;ll get a chance to fix
-          anything it misreads, then watch the solution play out move by move on a 3D
-          cube.
+          Start on any face — there&apos;s no colour to hunt for — and follow the
+          prompts as you turn the cube. You&apos;ll get a chance to fix anything it
+          misreads, then watch the solution play out move by move on a 3D cube.
         </p>
       </div>
 

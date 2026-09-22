@@ -16,6 +16,7 @@ import { invertMove } from '@/lib/cube/notation';
 import {
   faceletsFromString,
   FACES,
+  FACE_COLORS,
   type Color,
   type Face,
   type Facelets,
@@ -48,6 +49,16 @@ interface CubeState {
   /** Which faces the camera has captured so far. */
   captured: Partial<Record<Face, boolean>>;
 
+  /**
+   * The colour to draw each face in. Scanning starts on whichever face the
+   * user points at the camera, so the face called "front" is not necessarily
+   * the green one — the palette comes from the scanned centres instead of the
+   * built-in scheme, or the net would not match the cube in their hands.
+   */
+  faceColors: Record<Face, string>;
+  /** Anything the scan quietly corrected, worth telling the user about. */
+  scanNotice: string | null;
+
   validation: ValidationResult;
 
   solution: Move[] | null;
@@ -63,7 +74,15 @@ interface CubeState {
 
   // Actions
   setPhase: (phase: Phase) => void;
-  setScramble: (facelets: Facelets, meta?: { confidence?: number[]; uncertain?: number[] }) => void;
+  setScramble: (
+    facelets: Facelets,
+    meta?: {
+      confidence?: number[];
+      uncertain?: number[];
+      faceColors?: Record<Face, string>;
+      notice?: string | null;
+    },
+  ) => void;
   setSticker: (index: number, color: Color) => void;
   captureFace: (face: Face, colors: Color[], confidence: number[]) => void;
   resetScan: () => void;
@@ -80,6 +99,7 @@ interface CubeState {
   setSpeed: (speed: number) => void;
   reset: () => void;
   clearError: () => void;
+  clearScanNotice: () => void;
 }
 
 /** Base duration of one quarter turn, before the speed multiplier. */
@@ -117,6 +137,9 @@ export const useCubeStore = create<CubeState>((set, get) => ({
   uncertain: [],
   captured: {},
 
+  faceColors: { ...FACE_COLORS },
+  scanNotice: null,
+
   validation: validateFacelets(solvedFacelets()),
 
   solution: null,
@@ -135,6 +158,8 @@ export const useCubeStore = create<CubeState>((set, get) => ({
       scramble: facelets,
       confidence: meta?.confidence ?? null,
       uncertain: meta?.uncertain ?? [],
+      faceColors: meta?.faceColors ?? { ...FACE_COLORS },
+      scanNotice: meta?.notice ?? null,
       validation: validateFacelets(facelets),
       solution: null,
       moveIndex: 0,
@@ -184,6 +209,8 @@ export const useCubeStore = create<CubeState>((set, get) => ({
       confidence: null,
       uncertain: [],
       captured: {},
+      faceColors: { ...FACE_COLORS },
+      scanNotice: null,
       validation: validateFacelets(solvedFacelets()),
       solution: null,
       moveIndex: 0,
@@ -317,6 +344,7 @@ export const useCubeStore = create<CubeState>((set, get) => ({
   },
 
   clearError: () => set({ error: null }),
+  clearScanNotice: () => set({ scanNotice: null }),
 }));
 
 /**

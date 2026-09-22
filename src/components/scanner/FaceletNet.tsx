@@ -21,6 +21,16 @@ import {
   type Facelets,
 } from '@/lib/cube/types';
 
+/**
+ * Name the swatch by the colour it is drawn in, not by which face of the
+ * built-in scheme it belongs to — the two only coincide when the user happened
+ * to start scanning on the white face.
+ */
+function swatchName(hex: string): string {
+  const match = FACES.find((face) => FACE_COLORS[face].toLowerCase() === hex.toLowerCase());
+  return match ? FACE_COLOR_NAMES[match] : hex;
+}
+
 interface FaceletNetProps {
   facelets: Facelets;
   /** Stickers the scanner was unsure of. */
@@ -30,6 +40,11 @@ interface FaceletNetProps {
   onChange?: (index: number, color: Color) => void;
   /** Read-only mode, used for the small summary view. */
   editable?: boolean;
+  /**
+   * What colour to draw each face's stickers in. Defaults to the classic
+   * scheme, but a scan supplies the colours it actually saw.
+   */
+  colors?: Record<Face, string>;
 }
 
 /** Position of each face in the 4x3 net grid. */
@@ -48,6 +63,7 @@ export default function FaceletNet({
   invalid = [],
   onChange,
   editable = true,
+  colors = FACE_COLORS,
 }: FaceletNetProps) {
   const [brush, setBrush] = useState<Color>('U');
 
@@ -87,7 +103,7 @@ export default function FaceletNet({
 
                 const label = `${FACE_NAMES[face]} face, ${
                   isCenter ? 'center' : `position ${i + 1}`
-                }, ${FACE_COLOR_NAMES[color]}${isUncertain ? ', uncertain' : ''}`;
+                }, ${swatchName(colors[color])}${isUncertain ? ', uncertain' : ''}`;
 
                 return (
                   <button
@@ -104,7 +120,7 @@ export default function FaceletNet({
                         : 'cursor-default'
                     } ${isCenter ? 'opacity-100' : ''}`}
                     style={{
-                      backgroundColor: FACE_COLORS[color],
+                      backgroundColor: colors[color],
                       boxShadow: isCenter ? 'inset 0 0 0 2px rgba(0,0,0,0.45)' : undefined,
                     }}
                   />
@@ -127,13 +143,13 @@ export default function FaceletNet({
                 type="button"
                 onClick={() => setBrush(face)}
                 aria-pressed={brush === face}
-                aria-label={FACE_COLOR_NAMES[face]}
+                aria-label={swatchName(colors[face])}
                 className={`h-11 w-11 rounded-lg transition ${
                   brush === face
                     ? 'ring-2 ring-white ring-offset-2 ring-offset-slate-950'
                     : 'ring-1 ring-white/20'
                 }`}
-                style={{ backgroundColor: FACE_COLORS[face] }}
+                style={{ backgroundColor: colors[face] }}
               />
             ))}
           </div>

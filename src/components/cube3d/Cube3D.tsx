@@ -9,7 +9,7 @@
  * already has the stickers in their new places, so the handover is seamless.
  */
 
-import { useCallback, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { Canvas, useFrame, type ThreeElements } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
@@ -22,7 +22,7 @@ import {
   isInLayer,
   type Vec3,
 } from '@/lib/cube/geometry';
-import { FACE_COLORS, type Facelets } from '@/lib/cube/types';
+import { type Face, type Facelets } from '@/lib/cube/types';
 import { useCubeStore, selectCurrentFacelets } from '@/store/cubeStore';
 
 /** Spacing between cubie centers; slightly over 1 so the gaps read as seams. */
@@ -93,6 +93,9 @@ function Cubie({
 function CubeModel() {
   const facelets = useCubeStore(selectCurrentFacelets);
   const animation = useCubeStore((s) => s.animation);
+  // Scanning starts on an arbitrary face, so the sticker colours come from the
+  // scan rather than from the classic scheme.
+  const faceColors = useCubeStore((s) => s.faceColors);
 
   const pivotRef = useRef<THREE.Group>(null);
 
@@ -106,12 +109,19 @@ function CubeModel() {
     [],
   );
   const stickerMaterials = useMemo(() => {
-    const entries = Object.entries(FACE_COLORS).map(([face, color]) => [
+    const entries = Object.entries(faceColors).map(([face, color]) => [
       face,
       new THREE.MeshStandardMaterial({ color, roughness: 0.35, metalness: 0 }),
     ]);
-    return Object.fromEntries(entries) as Record<string, THREE.Material>;
-  }, []);
+    return Object.fromEntries(entries) as Record<Face, THREE.Material>;
+  }, [faceColors]);
+
+  // Rescanning replaces the palette, so the materials it replaced have to go
+  // back to the GPU rather than accumulating for the life of the page.
+  useEffect(
+    () => () => Object.values(stickerMaterials).forEach((material) => material.dispose()),
+    [stickerMaterials],
+  );
 
   useFrame(() => {
     const pivot = pivotRef.current;

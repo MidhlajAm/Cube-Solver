@@ -14,17 +14,22 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  FACES,
-  FACE_COLORS,
-  FACE_COLOR_NAMES,
-  type Color,
-  type Face,
-} from '@/lib/cube/types';
+import { FACES, type Color, type Face } from '@/lib/cube/types';
+import { applyQuarters, mapIndices, repairOrientation } from '@/lib/cube/orient';
 import { rgbToCss } from '@/lib/vision/color';
 import { sampleVideoFrame, type StickerSample } from '@/lib/vision/sampler';
 import { classifyFacelets } from '@/lib/vision/classify';
-import { SCAN_STEPS, instructionFor } from './scanSteps';
+import { paletteFromCenters } from '@/lib/vision/palette';
+import { SCAN_STEPS } from './scanSteps';
+
+/** Plain-English summary of any faces the scan had to straighten. */
+function describeRepair(corrected: Face[]): string | null {
+  if (corrected.length === 0) return null;
+  const count = corrected.length;
+  return `${count === 1 ? 'One face was' : `${count} faces were`} held a quarter turn out, so ${
+    count === 1 ? 'it has' : 'they have'
+  } been straightened. Check the net still matches your cube.`;
+}
 
 type CameraState =
   | { status: 'idle' }
@@ -39,6 +44,8 @@ interface CameraScannerProps {
     facelets: Color[];
     confidence: number[];
     uncertain: number[];
+    faceColors: Record<Face, string>;
+    notice: string | null;
   }) => void;
   onCancel: () => void;
 }
@@ -168,11 +175,28 @@ export default function CameraScanner({ onComplete, onCancel }: CameraScannerPro
     if (ordered.length !== 54) return;
 
     const result = classifyFacelets(ordered);
+
+    // The face the user started on is arbitrary, so the built-in colour scheme
+    // is not the right thing to draw with. Take the palette from what was
+    // actually scanned, or the net will not match the cube in their hands.
+    const faceColors = paletteFromCenters(
+      Object.fromEntries(FACES.map((face) => [face, next[face]![4].rgb])),
+    );
+
+    // A face held a quarter turn out does not look wrong — it makes the cube
+    // impossible, and the resulting complaint is about corners, not about grip.
+    // Nobody could reasonably work back from that, so undo it here.
+    const repair = repairOrientation(result.facelets);
+    const quarters = repair?.quarters;
+    const moved = quarters ? mapIndices(quarters) : null;
+
     stop();
     onComplete({
-      facelets: result.facelets,
-      confidence: result.confidence,
-      uncertain: result.uncertain,
+      facelets: repair ? repair.facelets : result.facelets,
+      confidence: quarters ? applyQuarters(result.confidence, quarters) : result.confidence,
+      uncertain: moved ? result.uncertain.map((index) => moved[index]) : result.uncertain,
+      faceColors,
+      notice: describeRepair(repair?.corrected ?? []),
     });
   }, [captures, step, stepIndex, onComplete, stop]);
 
@@ -225,9 +249,10 @@ export default function CameraScanner({ onComplete, onCancel }: CameraScannerPro
         {/* Instruction band */}
         <div className="pointer-events-none absolute inset-x-0 top-0 bg-gradient-to-b from-black/80 to-transparent p-4 pt-[max(1rem,env(safe-area-inset-top))]">
           <p className="text-center text-sm font-semibold text-white sm:text-base">
-            {instructionFor(step)}
+            {step.instruction}
           </p>
-          <p className="mt-1 text-center text-xs text-white/70">
+          <p className="mt-1 text-center text-xs text-white/75">{step.detail}</p>
+          <p className="mt-1 text-center text-[11px] font-medium uppercase tracking-wide text-white/50">
             Face {stepIndex + 1} of {SCAN_STEPS.length}
           </p>
         </div>
@@ -236,22 +261,27 @@ export default function CameraScanner({ onComplete, onCancel }: CameraScannerPro
       {/* Controls */}
       <div className="flex flex-col gap-3 bg-slate-950 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
         <div className="flex items-center justify-center gap-2">
-          {SCAN_STEPS.map((s, i) => (
-            <span
-              key={s.face}
-              aria-label={`${FACE_COLOR_NAMES[s.face]} face ${captures[s.face] ? 'captured' : 'not captured'}`}
-              className={`h-2.5 rounded-full transition-all ${
-                i === stepIndex ? 'w-6' : 'w-2.5'
-              }`}
-              style={{
-                backgroundColor: captures[s.face]
-                  ? FACE_COLORS[s.face]
-                  : i === stepIndex
-                    ? '#ffffff'
-                    : '#334155',
-              }}
-            />
-          ))}
+          {SCAN_STEPS.map((s, i) => {
+            // Fill each dot with the centre colour actually seen, so progress
+            // reflects the user's cube rather than a scheme it may not use.
+            const centre = captures[s.face]?.[4];
+            return (
+              <span
+                key={s.face}
+                aria-label={`Face ${i + 1} ${captures[s.face] ? 'captured' : 'not captured'}`}
+                className={`h-2.5 rounded-full transition-all ${
+                  i === stepIndex ? 'w-6' : 'w-2.5'
+                }`}
+                style={{
+                  backgroundColor: centre
+                    ? rgbToCss(centre.rgb)
+                    : i === stepIndex
+                      ? '#ffffff'
+                      : '#334155',
+                }}
+              />
+            );
+          })}
         </div>
 
         <div className="flex items-center gap-3">
@@ -268,7 +298,7 @@ export default function CameraScanner({ onComplete, onCancel }: CameraScannerPro
             onClick={capture}
             className="min-h-14 flex-1 rounded-xl bg-white text-base font-semibold text-slate-900 active:bg-slate-200"
           >
-            Capture {FACE_COLOR_NAMES[step.face]}
+            Capture
           </button>
 
           {torchAvailable ? (
