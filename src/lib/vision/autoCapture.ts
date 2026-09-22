@@ -16,12 +16,14 @@
 
 import { labDistance } from './color';
 import type { StickerSample } from './sampler';
-import { FACES, type Face } from '@/lib/cube/types';
+import { DEFAULT_SIZE, FACES, type CubeSize, type Face } from '@/lib/cube/types';
 
-/** Position of the centre sticker within one face's nine samples. */
-const CENTRE = 4;
-/** The eight positions around it. */
-const RING: readonly number[] = [0, 1, 2, 3, 5, 6, 7, 8];
+/** Position of the centre sticker within one face's samples, if it has one. */
+function centreIndex(size: CubeSize): number | null {
+  if (size % 2 === 0) return null;
+  const middle = (size - 1) / 2;
+  return middle * size + middle;
+}
 
 /**
  * How far a sticker's colour may drift between frames and still count as
@@ -94,32 +96,42 @@ export function isLitWellEnough(samples: readonly StickerSample[]): boolean {
   return mean >= MIN_MEAN_LIGHTNESS;
 }
 
-/** Rotate one face's nine samples a quarter turn clockwise. */
-function rotate<T>(values: readonly T[]): T[] {
+/** Rotate one face's samples a quarter turn clockwise. */
+function rotate<T>(values: readonly T[], size: CubeSize): T[] {
   const out = [...values];
-  for (let row = 0; row < 3; row++) {
-    for (let column = 0; column < 3; column++) {
-      out[row * 3 + column] = values[(2 - column) * 3 + row];
+  for (let row = 0; row < size; row++) {
+    for (let column = 0; column < size; column++) {
+      out[row * size + column] = values[(size - 1 - column) * size + row];
     }
   }
   return out;
 }
 
 /**
- * Mean distance between two faces' outer stickers, at whichever of the four
+ * Mean distance between two readings of a face, at whichever of the four
  * rotations fits best — the user is free to have picked the cube up differently
  * since, and a face rolled a quarter turn is still the same face.
+ *
+ * The centre, where there is one, is left out: it is checked separately and far
+ * more strictly, because it alone identifies the face.
  */
-function ringDistance(a: readonly StickerSample[], b: readonly StickerSample[]): number {
+function patternDistance(
+  a: readonly StickerSample[],
+  b: readonly StickerSample[],
+  size: CubeSize,
+): number {
+  const skip = centreIndex(size);
+  const positions = a.map((_, i) => i).filter((i) => i !== skip);
+
   let best = Infinity;
   let rotated = [...a];
   for (let turn = 0; turn < 4; turn++) {
-    const total = RING.reduce(
+    const total = positions.reduce(
       (sum, index) => sum + labDistance(rotated[index].lab, b[index].lab),
       0,
     );
-    best = Math.min(best, total / RING.length);
-    rotated = rotate(rotated);
+    best = Math.min(best, total / positions.length);
+    rotated = rotate(rotated, size);
   }
   return best;
 }
@@ -135,7 +147,9 @@ function ringDistance(a: readonly StickerSample[], b: readonly StickerSample[]):
 export function matchCapturedFace(
   samples: readonly StickerSample[],
   captured: Partial<Record<Face, readonly StickerSample[]>>,
+  size: CubeSize = DEFAULT_SIZE,
 ): Face | null {
+  const centre = centreIndex(size);
   let best: Face | null = null;
   let bestScore = Infinity;
 
@@ -143,13 +157,18 @@ export function matchCapturedFace(
     const previous = captured[face];
     if (!previous) continue;
 
-    const centre = labDistance(samples[CENTRE].lab, previous[CENTRE].lab);
-    if (centre > CENTRE_MATCH_DISTANCE) continue;
+    // On a cube with a centre that single sticker settles which face this is,
+    // so it gets its own, tighter gate. Without one, the whole face has to
+    // agree — which is weaker evidence, but erring towards letting a face
+    // through is the safe direction.
+    const centreDistance =
+      centre === null ? 0 : labDistance(samples[centre].lab, previous[centre].lab);
+    if (centreDistance > CENTRE_MATCH_DISTANCE) continue;
 
-    const ring = ringDistance(samples, previous);
-    if (ring > RING_MATCH_DISTANCE) continue;
+    const pattern = patternDistance(samples, previous, size);
+    if (pattern > RING_MATCH_DISTANCE) continue;
 
-    const score = centre + ring;
+    const score = centreDistance + pattern;
     if (score < bestScore) {
       bestScore = score;
       best = face;

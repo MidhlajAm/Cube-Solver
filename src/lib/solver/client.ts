@@ -6,8 +6,21 @@
  * expensive part and we only ever want to pay it once.
  */
 
-import { faceletsToString, type Facelets } from '@/lib/cube/types';
+import {
+  DEFAULT_SIZE,
+  FACES,
+  faceletsToString,
+  sizeOf,
+  solvedFacelets,
+  type CubeSize,
+  type Facelets,
+  type Turns,
+} from '@/lib/cube/types';
 import { validateFacelets } from '@/lib/cube/validate';
+import { canonicalize } from '@/lib/cube/canonical';
+import { applyMoves } from '@/lib/cube/state';
+import { movesToString } from '@/lib/cube/notation';
+import { solveTwoByTwo, warmUpTwoByTwo } from './twoByTwo';
 
 export type SolverStatus = 'idle' | 'loading' | 'ready' | 'error';
 
@@ -70,6 +83,10 @@ function request<T>(type: string, payload?: unknown): Promise<T> {
  * finished scanning.
  */
 export function initSolver(): Promise<void> {
+  // The 2x2 tables are small enough to build inline and are needed whichever
+  // size the user picks next, so they are never worth waiting on separately.
+  warmUpTwoByTwo();
+
   if (!readyPromise) {
     readyPromise = request<{ ms: number }>('init').then(() => undefined);
   }
@@ -87,6 +104,15 @@ export async function solveCube(facelets: Facelets): Promise<string> {
     throw new Error(validation.issues[0]?.message ?? 'This is not a valid cube.');
   }
 
+  // A 2x2 is solved here on the main thread. Its whole search costs a few tens
+  // of milliseconds, so shipping it to the worker would add more latency in
+  // message passing than it saves.
+  if (sizeOf(facelets) === 2) {
+    const anchored = canonicalize(facelets, 2);
+    if (!anchored) throw new Error('These colors cannot sit on a cube together.');
+    return movesToString(solveTwoByTwo(anchored));
+  }
+
   await initSolver();
   const result = await request<{ solution: string }>('solve', {
     facelets: faceletsToString(facelets),
@@ -94,8 +120,18 @@ export async function solveCube(facelets: Facelets): Promise<string> {
   return result.solution;
 }
 
-/** A uniformly random solvable cube state, for the demo scramble button. */
-export async function randomCube(): Promise<string> {
+/** A random solvable cube state, for the demo scramble button. */
+export async function randomCube(size: CubeSize = DEFAULT_SIZE): Promise<string> {
+  if (size === 2) {
+    // Twenty random turns is far past the eleven needed to reach anywhere, so
+    // this covers the whole state space well enough for a demo.
+    const moves = Array.from({ length: 20 }, () => ({
+      face: FACES[Math.floor(Math.random() * FACES.length)],
+      turns: (Math.floor(Math.random() * 3) + 1) as Turns,
+    }));
+    return faceletsToString(applyMoves(solvedFacelets(2), moves));
+  }
+
   const result = await request<{ facelets: string }>('scramble');
   return result.facelets;
 }

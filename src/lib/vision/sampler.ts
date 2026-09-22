@@ -1,12 +1,13 @@
 /**
  * Reads the nine sticker colors out of a camera frame.
  *
- * The scanner draws a square 3x3 guide over the video; this samples a patch at
- * the middle of each cell rather than the whole cell, so the dark grid lines
+ * The scanner draws a square n-by-n guide over the video; this samples a patch
+ * at the middle of each cell rather than the whole cell, so the dark grid lines
  * between stickers and the rounded sticker corners never pollute the reading.
  */
 
 import { medianRgb, rgbToLab, type Lab, type Rgb } from './color';
+import type { CubeSize } from '@/lib/cube/types';
 
 export interface StickerSample {
   /** Median color of the sampled patch. */
@@ -44,15 +45,16 @@ export function centeredRegion(width: number, height: number, inset = 0.72): Sam
 export function sampleStickers(
   context: CanvasRenderingContext2D,
   region: SampleRegion,
+  size: CubeSize,
   /** Fraction of each cell to read from the middle. */
   patchRatio = 0.5,
 ): StickerSample[] {
-  const cell = region.size / 3;
+  const cell = region.size / size;
   const patch = Math.max(2, Math.floor(cell * patchRatio));
   const samples: StickerSample[] = [];
 
-  for (let row = 0; row < 3; row++) {
-    for (let column = 0; column < 3; column++) {
+  for (let row = 0; row < size; row++) {
+    for (let column = 0; column < size; column++) {
       const cx = region.x + cell * (column + 0.5);
       const cy = region.y + cell * (row + 0.5);
       const sx = Math.floor(cx - patch / 2);
@@ -83,6 +85,7 @@ export function sampleStickers(
 export function sampleVideoFrame(
   video: HTMLVideoElement,
   canvas: HTMLCanvasElement,
+  size: CubeSize,
 ): StickerSample[] | null {
   const width = video.videoWidth;
   const height = video.videoHeight;
@@ -97,5 +100,5 @@ export function sampleVideoFrame(
   if (!context) return null;
 
   context.drawImage(video, 0, 0, width, height);
-  return sampleStickers(context, centeredRegion(width, height));
+  return sampleStickers(context, centeredRegion(width, height), size);
 }

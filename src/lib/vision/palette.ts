@@ -7,15 +7,19 @@
  * front face might really be blue, and drawing it green would mean the net the
  * user is asked to check against their cube does not match it.
  *
- * So the palette is taken from the scan. Each face's centre *is* its colour, so
- * the six scanned centres are mapped one-to-one onto six clean display colours.
- * Snapping to clean colours rather than painting the raw camera values keeps
- * the net readable under poor light, where a real reading can come out muddy
- * enough that two faces look alike.
+ * So the palette is taken from the scan: the stickers the classifier put in
+ * each colour group are averaged, and the six averages are mapped one-to-one
+ * onto six clean display colours. Snapping to clean colours rather than
+ * painting the raw camera values keeps the net readable under poor light,
+ * where a real reading can come out muddy enough that two faces look alike.
+ *
+ * Averaging the whole group rather than reading a single centre sticker also
+ * means this works on a 2x2, which has no centres at all.
  */
 
-import { FACES, FACE_COLORS, type Face } from '@/lib/cube/types';
+import { FACES, FACE_COLORS, type Face, type Facelets } from '@/lib/cube/types';
 import { labDistance, rgbToLab, type Lab, type Rgb } from './color';
+import type { StickerSample } from './sampler';
 
 /** The clean colours available to draw with: the classic cube scheme. */
 const SWATCHES: readonly string[] = FACES.map((face) => FACE_COLORS[face]);
@@ -80,4 +84,34 @@ export function paletteFromCenters(centers: Partial<Record<Face, Rgb>>): Record<
   return Object.fromEntries(
     FACES.map((face, i) => [face, SWATCHES[best[i]]]),
   ) as Record<Face, string>;
+}
+
+/**
+ * Work out the palette from a finished classification: average every sticker
+ * the classifier assigned to each colour, then snap those averages to swatches.
+ */
+export function paletteFromFacelets(
+  samples: readonly StickerSample[],
+  facelets: Facelets,
+): Record<Face, string> {
+  const totals = new Map<Face, { r: number; g: number; b: number; count: number }>();
+
+  facelets.forEach((face, index) => {
+    const sample = samples[index];
+    if (!sample) return;
+    const total = totals.get(face) ?? { r: 0, g: 0, b: 0, count: 0 };
+    total.r += sample.rgb.r;
+    total.g += sample.rgb.g;
+    total.b += sample.rgb.b;
+    total.count += 1;
+    totals.set(face, total);
+  });
+
+  const means: Partial<Record<Face, Rgb>> = {};
+  for (const [face, total] of totals) {
+    if (total.count === 0) continue;
+    means[face] = { r: total.r / total.count, g: total.g / total.count, b: total.b / total.count };
+  }
+
+  return paletteFromCenters(means);
 }

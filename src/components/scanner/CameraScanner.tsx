@@ -20,12 +20,19 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { FACES, type Color, type Face } from '@/lib/cube/types';
+import {
+  FACES,
+  faceletCountFor,
+  stickersPerFace,
+  type Color,
+  type Face,
+} from '@/lib/cube/types';
+import { useCubeStore } from '@/store/cubeStore';
 import { applyQuarters, mapIndices, repairOrientation } from '@/lib/cube/orient';
-import { rgbToCss, type Rgb } from '@/lib/vision/color';
+import { rgbToCss } from '@/lib/vision/color';
 import { sampleVideoFrame, type StickerSample } from '@/lib/vision/sampler';
 import { classifyFacelets } from '@/lib/vision/classify';
-import { paletteFromCenters } from '@/lib/vision/palette';
+import { paletteFromFacelets } from '@/lib/vision/palette';
 import { isLitWellEnough, isSteady, matchCapturedFace, steadiness } from '@/lib/vision/autoCapture';
 import { SCAN_STEPS } from './scanSteps';
 
@@ -58,6 +65,7 @@ type Guidance =
   | { kind: 'moving'; progress: number }
   | { kind: 'repeat'; stepNumber: number }
   | { kind: 'holding'; progress: number }
+  | { kind: 'ready' }
   | { kind: 'captured' };
 
 interface CameraScannerProps {
@@ -72,6 +80,10 @@ interface CameraScannerProps {
 }
 
 export default function CameraScanner({ onComplete, onCancel }: CameraScannerProps) {
+  const size = useCubeStore((s) => s.size);
+  const autoCapture = useCubeStore((s) => s.autoCapture);
+  const setAutoCapture = useCubeStore((s) => s.setAutoCapture);
+
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -176,26 +188,21 @@ export default function CameraScanner({ onComplete, onCancel }: CameraScannerPro
       // act as reference colors and the nine-of-each-color rule is applied
       // across the whole cube at once.
       const ordered = FACES.flatMap((face) => next[face] ?? []);
-      if (ordered.length !== 54) return;
+      if (ordered.length !== faceletCountFor(size)) return;
 
-      const result = classifyFacelets(ordered);
+      const result = classifyFacelets(ordered, size);
 
       // The face the user started on is arbitrary, so the built-in colour
       // scheme is not the right thing to draw with. Take the palette from what
       // was actually scanned, or the net will not match the cube in their hands.
-      const centers: Partial<Record<Face, Rgb>> = {};
-      for (const face of FACES) {
-        const centre = next[face]?.[4];
-        if (centre) centers[face] = centre.rgb;
-      }
-      const faceColors = paletteFromCenters(centers);
+      const faceColors = paletteFromFacelets(ordered, result.facelets);
 
       // A face held a quarter turn out does not look wrong — it makes the cube
       // impossible, and the resulting complaint is about corners, not grip.
       // Nobody could reasonably work back from that, so undo it here.
       const repair = repairOrientation(result.facelets);
       const quarters = repair?.quarters;
-      const moved = quarters ? mapIndices(quarters) : null;
+      const moved = quarters ? mapIndices(quarters, size) : null;
 
       stop();
       onComplete({
@@ -206,7 +213,7 @@ export default function CameraScanner({ onComplete, onCancel }: CameraScannerPro
         notice: describeRepair(repair?.corrected ?? []),
       });
     },
-    [captures, step, stepIndex, onComplete, stop],
+    [captures, step, stepIndex, onComplete, stop, size],
   );
 
   /**
@@ -218,7 +225,7 @@ export default function CameraScanner({ onComplete, onCancel }: CameraScannerPro
    */
   const inspect = useCallback(() => {
     if (!videoRef.current || !canvasRef.current) return;
-    const samples = sampleVideoFrame(videoRef.current, canvasRef.current);
+    const samples = sampleVideoFrame(videoRef.current, canvasRef.current, size);
     if (!samples) return;
 
     setPreview(samples);
@@ -235,7 +242,7 @@ export default function CameraScanner({ onComplete, onCancel }: CameraScannerPro
 
     // Checked before steadiness, so a user resting on a face they have already
     // done is told to move on rather than watching a countdown that never fires.
-    const alreadyHave = matchCapturedFace(samples, captures);
+    const alreadyHave = matchCapturedFace(samples, captures, size);
     if (alreadyHave) {
       setGuidance({
         kind: 'repeat',
@@ -250,8 +257,15 @@ export default function CameraScanner({ onComplete, onCancel }: CameraScannerPro
       return;
     }
 
+    // Settled and new. In manual mode that is as far as it goes: say so and
+    // wait to be told.
+    if (!autoCapture) {
+      setGuidance({ kind: 'ready' });
+      return;
+    }
+
     commit(samples);
-  }, [captures, commit]);
+  }, [captures, commit, size, autoCapture]);
 
   const inspectRef = useRef(inspect);
   useEffect(() => {
@@ -266,9 +280,9 @@ export default function CameraScanner({ onComplete, onCancel }: CameraScannerPro
 
   const captureNow = useCallback(() => {
     if (!videoRef.current || !canvasRef.current) return;
-    const samples = sampleVideoFrame(videoRef.current, canvasRef.current);
+    const samples = sampleVideoFrame(videoRef.current, canvasRef.current, size);
     if (samples) commit(samples);
-  }, [commit]);
+  }, [commit, size]);
 
   const toggleTorch = useCallback(async () => {
     const track = streamRef.current?.getVideoTracks()[0];
@@ -318,8 +332,11 @@ export default function CameraScanner({ onComplete, onCancel }: CameraScannerPro
             className="relative rounded-xl p-1 transition-colors duration-150"
             style={{ width: 'min(72vw, 72vh, 420px)', boxShadow: `0 0 0 3px ${status.frame}` }}
           >
-            <div className="grid aspect-square grid-cols-3 grid-rows-3 gap-[2px]">
-              {Array.from({ length: 9 }, (_, i) => (
+            <div
+              className="grid aspect-square gap-[2px]"
+              style={{ gridTemplateColumns: `repeat(${size}, minmax(0, 1fr))` }}
+            >
+              {Array.from({ length: stickersPerFace(size) }, (_, i) => (
                 <div
                   key={i}
                   className="rounded-sm border-2 border-white/70"
@@ -358,7 +375,9 @@ export default function CameraScanner({ onComplete, onCancel }: CameraScannerPro
               style={{ width: `${Math.round(status.progress * 100)}%` }}
             />
           </div>
-          <p className="text-[11px] text-white/50">Shoots by itself · tap to shoot now</p>
+          <p className="text-[11px] text-white/50">
+            {autoCapture ? 'Shoots by itself · tap to shoot now' : 'Tap the view to capture'}
+          </p>
         </div>
       </div>
 
@@ -387,34 +406,74 @@ export default function CameraScanner({ onComplete, onCancel }: CameraScannerPro
         </div>
 
         <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={onCancel}
-            className="min-h-11 flex-1 rounded-xl px-4 text-sm font-medium text-slate-300 active:bg-slate-800"
+          {/* Auto-capture suits a cube you can hold steady in good light;
+              manual is the fallback when it will not settle, or when the user
+              simply wants to decide the moment themselves. */}
+          <div
+            role="group"
+            aria-label="Capture mode"
+            className="flex flex-1 rounded-xl bg-slate-900 p-1"
           >
-            Cancel
-          </button>
-
-          <button
-            type="button"
-            onClick={retakeAll}
-            className="min-h-11 flex-1 rounded-xl px-4 text-sm font-medium text-slate-300 active:bg-slate-800"
-          >
-            Start over
-          </button>
+            {[
+              { label: 'Auto', on: true },
+              { label: 'Manual', on: false },
+            ].map(({ label, on }) => (
+              <button
+                key={label}
+                type="button"
+                onClick={() => setAutoCapture(on)}
+                aria-pressed={autoCapture === on}
+                className={`min-h-9 flex-1 rounded-lg text-sm font-medium transition ${
+                  autoCapture === on ? 'bg-slate-700 text-white' : 'text-slate-400'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
 
           {torchAvailable && (
             <button
               type="button"
               onClick={() => void toggleTorch()}
               aria-pressed={torchOn}
-              className={`min-h-11 flex-1 rounded-xl px-4 text-sm font-medium ${
+              className={`min-h-11 rounded-xl px-4 text-sm font-medium ${
                 torchOn ? 'bg-amber-400 text-slate-900' : 'text-slate-300 active:bg-slate-800'
               }`}
             >
               Light
             </button>
           )}
+        </div>
+
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="min-h-11 rounded-xl px-4 text-sm font-medium text-slate-300 active:bg-slate-800"
+          >
+            Cancel
+          </button>
+
+          {!autoCapture && (
+            <button
+              type="button"
+              onClick={captureNow}
+              className="min-h-14 flex-1 rounded-xl bg-white text-base font-semibold text-slate-900 active:bg-slate-200"
+            >
+              Capture face {stepIndex + 1}
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={retakeAll}
+            className={`min-h-11 rounded-xl px-4 text-sm font-medium text-slate-300 active:bg-slate-800 ${
+              autoCapture ? 'flex-1' : ''
+            }`}
+          >
+            Start over
+          </button>
         </div>
       </div>
     </div>
@@ -456,6 +515,13 @@ function describeGuidance(guidance: Guidance): {
         progress: guidance.progress,
         pill: 'bg-slate-900/85 text-white',
         frame: 'rgba(52,211,153,0.8)',
+      };
+    case 'ready':
+      return {
+        message: 'Lined up — tap Capture',
+        progress: 1,
+        pill: 'bg-white text-slate-950',
+        frame: 'rgba(52,211,153,0.9)',
       };
     case 'captured':
       return {

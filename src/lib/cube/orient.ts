@@ -14,7 +14,16 @@
  * them all and keep the one that is a real cube.
  */
 
-import { FACELET_COUNT, FACES, FACE_OFFSET, type Face, type Facelets } from './types';
+import {
+  FACES,
+  faceOffsetFor,
+  faceletCountFor,
+  sizeOf,
+  stickersPerFace,
+  type CubeSize,
+  type Face,
+  type Facelets,
+} from './types';
 import { validateFacelets } from './validate';
 
 /** Number of distinct ways a single face can have been held. */
@@ -29,13 +38,16 @@ export function rotateFaceStickers<T>(values: readonly T[], face: Face, quarters
   const turns = ((quarters % ORIENTATIONS) + ORIENTATIONS) % ORIENTATIONS;
   if (turns === 0) return [...values];
 
+  const size = sizeOf(values);
+  const perFace = stickersPerFace(size);
   const out = [...values];
-  const base = FACE_OFFSET[face];
+  const base = faceOffsetFor(face, size);
+
   for (let t = 0; t < turns; t++) {
-    const before = out.slice(base, base + 9);
-    for (let row = 0; row < 3; row++) {
-      for (let column = 0; column < 3; column++) {
-        out[base + row * 3 + column] = before[(2 - column) * 3 + row];
+    const before = out.slice(base, base + perFace);
+    for (let row = 0; row < size; row++) {
+      for (let column = 0; column < size; column++) {
+        out[base + row * size + column] = before[(size - 1 - column) * size + row];
       }
     }
   }
@@ -61,12 +73,13 @@ export function applyQuarters<T>(values: readonly T[], quarters: Record<Face, nu
  * Where each facelet ends up under a repair: `mapIndices(q)[oldIndex]` is the
  * index that sticker occupies afterwards.
  */
-export function mapIndices(quarters: Record<Face, number>): number[] {
+export function mapIndices(quarters: Record<Face, number>, size: CubeSize): number[] {
+  const count = faceletCountFor(size);
   const source = applyQuarters(
-    Array.from({ length: FACELET_COUNT }, (_, i) => i),
+    Array.from({ length: count }, (_, i) => i),
     quarters,
   );
-  const destination = new Array<number>(FACELET_COUNT).fill(0);
+  const destination = new Array<number>(count).fill(0);
   source.forEach((from, to) => {
     destination[from] = to;
   });

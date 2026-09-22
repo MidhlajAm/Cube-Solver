@@ -17,10 +17,15 @@ import {
   CENTER_INDEX,
   FACES,
   FACE_COLOR_NAMES,
+  centerIndexFor,
+  sizeOf,
+  stickersPerFace,
   type Color,
   type Face,
   type Facelets,
 } from './types';
+import { cornerFaceletsFor } from './corners';
+import { canonicalizeByAnchorCorner } from './canonical';
 
 /** Facelet index triples for the 8 corners, in solver order (URF, UFL, ...). */
 export const CORNER_FACELETS: readonly (readonly [number, number, number])[] = [
@@ -133,13 +138,20 @@ function permutationParity(perm: number[]): number {
  */
 export function validateFacelets(facelets: Facelets): ValidationResult {
   const issues: ValidationIssue[] = [];
+  const size = sizeOf(facelets);
+  const perFace = stickersPerFace(size);
+  const cornerFacelets = cornerFaceletsFor(size);
+  // A 2x2 is all corners: no centres to pin the colours down, no edges, and
+  // so no edge-flip or corner/edge parity to check either.
+  const hasCentres = size % 2 === 1;
+  const hasEdges = size >= 3;
 
   const fail = (): ValidationResult => {
     const badIndices = [...new Set(issues.flatMap((i) => i.indices))].sort((a, b) => a - b);
     return { ok: false, issues, badIndices };
   };
 
-  // 1. Every color must appear exactly nine times.
+  // 1. Every color must appear exactly as many times as a face has stickers.
   const positionsByColor = new Map<Color, number[]>();
   for (const face of FACES) positionsByColor.set(face, []);
   facelets.forEach((color, index) => {
@@ -148,15 +160,30 @@ export function validateFacelets(facelets: Facelets): ValidationResult {
 
   for (const face of FACES) {
     const positions = positionsByColor.get(face) ?? [];
-    if (positions.length !== 9) {
+    if (positions.length !== perFace) {
       issues.push({
         kind: 'color-count',
-        message: `There are ${positions.length} ${colorName(face)} stickers — a cube has exactly 9 of each color.`,
+        message: `There are ${positions.length} ${colorName(face)} stickers — this cube has exactly ${perFace} of each color.`,
         indices: positions,
       });
     }
   }
   if (issues.length > 0) return fail();
+
+  // 1b. An even-sized cube has no centres to say which colour belongs on which
+  //     face, so it is read relative to one corner instead. Relabelling only
+  //     renames colours — no sticker moves — so facelet indices, and therefore
+  //     every "this sticker is wrong" highlight, still line up with the net.
+  const working = hasCentres ? facelets : canonicalizeByAnchorCorner(facelets, size);
+  if (!working) {
+    issues.push({
+      kind: 'impossible-corner',
+      message:
+        'These colors cannot sit on a cube together — two of them would have to be on opposite faces and share a corner at the same time.',
+      indices: [...cornerFacelets[6]],
+    });
+    return fail();
+  }
 
   // 2. Centers never move relative to each other, so they define which color
   //    belongs to which face. We work in a canonical form where a face's color
@@ -164,7 +191,9 @@ export function validateFacelets(facelets: Facelets): ValidationResult {
   //    center first), so every center must show its own face's color. This is
   //    stricter than merely requiring the six to differ, and it also catches a
   //    cube scanned with two faces transposed.
-  const misplacedCenters = FACES.filter((face) => facelets[CENTER_INDEX[face]] !== face);
+  const misplacedCenters = hasCentres
+    ? FACES.filter((face) => facelets[centerIndexFor(face, size)!] !== face)
+    : [];
   if (misplacedCenters.length > 0) {
     const centerColors = FACES.map((face) => facelets[CENTER_INDEX[face]]);
     const duplicates = [
@@ -178,7 +207,7 @@ export function validateFacelets(facelets: Facelets): ValidationResult {
           : `The centers don't line up with their faces (${misplacedCenters
               .map((f) => `${colorName(f)} face shows ${colorName(facelets[CENTER_INDEX[f]])}`)
               .join(', ')}). Check that the faces were scanned in the order asked for.`,
-      indices: misplacedCenters.map((face) => CENTER_INDEX[face]),
+      indices: misplacedCenters.map((face) => centerIndexFor(face, size)!),
     });
     return fail();
   }
@@ -187,9 +216,9 @@ export function validateFacelets(facelets: Facelets): ValidationResult {
   const cornerPermutation: number[] = [];
   const cornerOrientations: number[] = [];
 
-  for (let i = 0; i < CORNER_FACELETS.length; i++) {
-    const slot = CORNER_FACELETS[i];
-    const colors = slot.map((index) => facelets[index]) as [Color, Color, Color];
+  for (let i = 0; i < cornerFacelets.length; i++) {
+    const slot = cornerFacelets[i];
+    const colors = slot.map((index) => working[index]) as [Color, Color, Color];
 
     // Exactly one sticker of a corner is U or D coloured; its position within
     // the triple is the corner's orientation.
@@ -246,7 +275,7 @@ export function validateFacelets(facelets: Facelets): ValidationResult {
         .map((p) => CORNER_COLORS[p].map(colorName).join('/'))
         .join(', ')}). Check for a mis-read sticker.`,
       indices: [...new Set(repeated)].flatMap((p) =>
-        cornerPermutation.flatMap((q, slot) => (q === p ? [...CORNER_FACELETS[slot]] : [])),
+        cornerPermutation.flatMap((q, slot) => (q === p ? [...cornerFacelets[slot]] : [])),
       ),
     });
     return fail();
@@ -256,9 +285,9 @@ export function validateFacelets(facelets: Facelets): ValidationResult {
   const edgePermutation: number[] = [];
   const edgeOrientations: number[] = [];
 
-  for (let i = 0; i < EDGE_FACELETS.length; i++) {
+  for (let i = 0; hasEdges && i < EDGE_FACELETS.length; i++) {
     const slot = EDGE_FACELETS[i];
-    const colors = slot.map((index) => facelets[index]) as [Color, Color];
+    const colors = slot.map((index) => working[index]) as [Color, Color];
 
     let piece = EDGE_COLORS.findIndex((c) => c[0] === colors[0] && c[1] === colors[1]);
     let orientation = 0;
@@ -282,7 +311,7 @@ export function validateFacelets(facelets: Facelets): ValidationResult {
   if (issues.length > 0) return fail();
 
   const seenEdges = new Set(edgePermutation);
-  if (seenEdges.size !== 12) {
+  if (hasEdges && seenEdges.size !== 12) {
     const repeated = edgePermutation.filter((p, i) => edgePermutation.indexOf(p) !== i);
     issues.push({
       kind: 'repeated-edge',
@@ -307,13 +336,13 @@ export function validateFacelets(facelets: Facelets): ValidationResult {
       kind: 'corner-twist',
       message:
         'One corner is twisted in place. That is impossible by turning alone, so a corner sticker is probably mis-read.',
-      indices: CORNER_FACELETS.flatMap((slot) => [...slot]),
+      indices: cornerFacelets.flatMap((slot) => [...slot]),
     });
   }
 
   // 6. Edge flips must cancel out (sum of orientations even).
   const flip = edgeOrientations.reduce((a, b) => a + b, 0) % 2;
-  if (flip !== 0) {
+  if (hasEdges && flip !== 0) {
     issues.push({
       kind: 'edge-flip',
       message:
@@ -325,7 +354,7 @@ export function validateFacelets(facelets: Facelets): ValidationResult {
   // 7. Corner and edge permutations must have matching parity: a single turn
   //    permutes both by a 4-cycle, so they always move in lockstep. Mismatched
   //    parity means exactly two pieces look swapped.
-  if (permutationParity(cornerPermutation) !== permutationParity(edgePermutation)) {
+  if (hasEdges && permutationParity(cornerPermutation) !== permutationParity(edgePermutation)) {
     issues.push({
       kind: 'permutation-parity',
       message:

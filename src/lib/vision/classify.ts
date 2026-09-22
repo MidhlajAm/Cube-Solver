@@ -9,7 +9,9 @@
  *  1. The six center stickers are ground truth. A center *defines* its face's
  *     color, so we use the scanned centers as reference seeds rather than any
  *     hard-coded palette. Whatever the lighting did to the cube, it did to the
- *     centers too.
+ *     centers too. An even-sized cube has no centres, so it instead picks six
+ *     mutually distant stickers to start from and anchors the result to a
+ *     corner afterwards.
  *
  *  2. A cube has exactly nine stickers of each color. Classifying stickers
  *     independently throws that away; here it is a hard constraint. Getting one
@@ -21,7 +23,17 @@
  * reaches the solver.
  */
 
-import { CENTER_INDEX, FACELET_COUNT, FACES, type Color, type Facelets } from '@/lib/cube/types';
+import {
+  DEFAULT_SIZE,
+  FACES,
+  centerIndexFor,
+  faceletCountFor,
+  stickersPerFace,
+  type Color,
+  type CubeSize,
+  type Facelets,
+} from '@/lib/cube/types';
+import { canonicalizeByAnchorCorner } from '@/lib/cube/canonical';
 import { labDistance, type Lab } from './color';
 import type { StickerSample } from './sampler';
 
@@ -109,40 +121,53 @@ function assignWithCapacity(
 }
 
 /**
- * Classify all 54 samples at once.
- *
- * `samples` must be in facelet index order: the nine stickers of U, then R, F,
- * D, L and B, each face read top-left to bottom-right.
+ * Pick starting colours by spreading out: begin at one sticker, then keep
+ * taking whichever is furthest from everything chosen so far.
  */
-export function classifyFacelets(samples: StickerSample[]): ClassificationResult {
-  if (samples.length !== FACELET_COUNT) {
-    throw new Error(`Expected ${FACELET_COUNT} samples, got ${samples.length}`);
+function farthestPointSeeds(samples: StickerSample[], count: number, first: number): Lab[] {
+  const seeds: Lab[] = [samples[first].lab];
+  while (seeds.length < count) {
+    let bestIndex = 0;
+    let bestDistance = -1;
+    samples.forEach((sample, index) => {
+      const distance = Math.min(...seeds.map((seed) => labDistance(sample.lab, seed)));
+      if (distance > bestDistance) {
+        bestDistance = distance;
+        bestIndex = index;
+      }
+    });
+    seeds.push(samples[bestIndex].lab);
   }
+  return seeds;
+}
 
-  // Seeds start as the scanned centers: a face's center is its color, by
-  // definition, so these are the one set of labels we know are correct.
-  let seeds: Lab[] = FACES.map((face) => samples[CENTER_INDEX[face]].lab);
+interface Attempt {
+  assignment: number[];
+  seeds: Lab[];
+  /** Total distance from every sticker to the colour it was given. */
+  cost: number;
+}
 
-  const centerIndices = FACES.map((face) => CENTER_INDEX[face]);
-  const freeIndices = Array.from({ length: FACELET_COUNT }, (_, i) => i).filter(
-    (i) => !centerIndices.includes(i),
-  );
-
+/**
+ * Classify from a given set of starting colours, refining them as it goes:
+ * assign, re-centre each colour on what it was given, assign again.
+ */
+function classifyFromSeeds(
+  samples: StickerSample[],
+  initialSeeds: Lab[],
+  freeIndices: number[],
+  centerIndices: number[],
+  capacity: number,
+  rounds: number,
+): Attempt {
+  let seeds = initialSeeds;
   let assignment: number[] = [];
 
-  // Two rounds: classify, re-centre the seeds on what was assigned, classify
-  // again. This lets a face lit differently from its centre pull its own seed
-  // toward its true colour.
-  for (let round = 0; round < 2; round++) {
+  for (let round = 0; round < rounds; round++) {
     const costs = samples.map((sample) => seeds.map((seed) => labDistance(sample.lab, seed)));
 
-    assignment = assignWithCapacity(
-      costs,
-      freeIndices,
-      // Each colour needs nine stickers; its centre already accounts for one.
-      new Array(FACES.length).fill(8),
-    );
-    // Centres are pinned to their own face.
+    assignment = assignWithCapacity(costs, freeIndices, new Array(FACES.length).fill(capacity));
+    // Centres, where they exist, are pinned to their own face.
     centerIndices.forEach((index, face) => {
       assignment[index] = face;
     });
@@ -156,6 +181,77 @@ export function classifyFacelets(samples: StickerSample[]): ClassificationResult
     );
   }
 
+  const cost = samples.reduce(
+    (total, sample, index) => total + labDistance(sample.lab, seeds[assignment[index]]),
+    0,
+  );
+
+  return { assignment, seeds, cost };
+}
+
+/**
+ * Classify a whole cube's samples at once.
+ *
+ * `samples` must be in facelet index order: the nine stickers of U, then R, F,
+ * D, L and B, each face read top-left to bottom-right.
+ */
+export function classifyFacelets(
+  samples: StickerSample[],
+  size: CubeSize = DEFAULT_SIZE,
+): ClassificationResult {
+  const expected = faceletCountFor(size);
+  if (samples.length !== expected) {
+    throw new Error(`Expected ${expected} samples, got ${samples.length}`);
+  }
+
+  // Seeds start as the scanned centers: a face's center is its color, by
+  // definition, so these are the one set of labels we know are correct. With
+  // no centres to lean on, six mutually distant stickers stand in.
+  const centerIndices = FACES.map((face) => centerIndexFor(face, size)).filter(
+    (index): index is number => index !== null,
+  );
+  let seeds: Lab[] =
+    centerIndices.length === FACES.length
+      ? centerIndices.map((index) => samples[index].lab)
+      : [];
+
+  const freeIndices = Array.from({ length: expected }, (_, i) => i).filter(
+    (i) => !centerIndices.includes(i),
+  );
+  // Each colour needs one sticker per face position; a centre already took one.
+  const capacity = stickersPerFace(size) - (centerIndices.length ? 1 : 0);
+
+  let best: Attempt;
+
+  if (centerIndices.length === FACES.length) {
+    // Two rounds: classify, re-centre the seeds on what was assigned, classify
+    // again. This lets a face lit differently from its centre pull its own seed
+    // toward its true colour.
+    best = classifyFromSeeds(samples, seeds, freeIndices, centerIndices, capacity, 2);
+  } else {
+    // With no centres there is nothing trustworthy to start from, and a bad
+    // start is not recoverable: two seeds landing on the same real colour under
+    // different lighting splits that colour in half and drags a second one with
+    // it. So try starting from every sticker in turn and keep whichever
+    // grouping ends up tightest — each attempt is a few thousand operations on
+    // twenty-four samples, which is nothing next to being wrong.
+    best = samples
+      .map((_, first) =>
+        classifyFromSeeds(
+          samples,
+          farthestPointSeeds(samples, FACES.length, first),
+          freeIndices,
+          centerIndices,
+          capacity,
+          4,
+        ),
+      )
+      .reduce((a, b) => (b.cost < a.cost ? b : a));
+  }
+
+  const assignment = best.assignment;
+  seeds = best.seeds;
+
   // Score each sticker by how much closer it is to its own colour than to the
   // nearest rival. Ties — the red/orange case — score near zero.
   const confidence = samples.map((sample, index) => {
@@ -167,7 +263,15 @@ export function classifyFacelets(samples: StickerSample[]): ClassificationResult
     return Math.max(0, Math.min(1, (rival - own) / (rival + own)));
   });
 
-  const facelets = assignment.map((color) => FACES[color] as Color);
+  let facelets = assignment.map((color) => FACES[color] as Color) as Facelets;
+
+  // With no centres the six groups are just groups — nothing yet says which is
+  // the "up" colour. Anchoring to a corner settles it. A reading too garbled to
+  // anchor is left as-is, so the validator can explain it rather than this
+  // throwing in the middle of a scan.
+  if (size % 2 === 0) {
+    facelets = canonicalizeByAnchorCorner(facelets, size) ?? facelets;
+  }
 
   const uncertain = confidence
     .map((value, index) => ({ value, index }))

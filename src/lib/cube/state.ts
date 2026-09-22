@@ -7,19 +7,28 @@
  * engine and asserting the cube ends solved is a genuine cross-check of both
  * (see tests/solver.test.ts).
  *
- * Moves are expressed as Singmaster facelet cycles, which is far less
- * error-prone to write and review than 54-entry permutation tables.
+ * Turns for any cube size are derived from the geometry: a face turn rotates
+ * the cubies in that layer, and where each sticker lands falls straight out of
+ * the coordinates. The hand-written Singmaster cycles below are kept as an
+ * independent oracle — tests/state.test.ts asserts the derived 3x3
+ * permutations match them exactly, so the general code is pinned to tables
+ * that were themselves cross-checked against the vendored solver.
  */
 
 import {
   FACELET_COUNT,
   FACE_OFFSET,
   FACES,
+  faceOffsetFor,
+  sizeOf,
+  stickersPerFace,
+  type CubeSize,
   type Face,
   type Facelets,
   type Move,
   solvedFacelets,
 } from './types';
+import { faceletIndexAt, geometryFor, isInLayer, rotateAboutFace } from './geometry';
 
 /** Facelet index from a face and a 1-based Singmaster sticker number (1..9). */
 function fi(face: Face, n: number): number {
@@ -105,30 +114,72 @@ const SOURCE: Record<Face, number[]> = (() => {
 })();
 
 /**
- * `sourceIndicesFor(face)[i]` is the facelet whose color ends up at index `i`
- * after one clockwise turn. Exposed so the 3D view can be checked against the
- * same permutation the engine actually uses.
+ * The hand-written 3x3 permutation, kept only as the oracle the derived tables
+ * are checked against. Everything else goes through `sourceIndicesFor`.
  */
-export function sourceIndicesFor(face: Face): readonly number[] {
+export function singmasterSourceIndices(face: Face): readonly number[] {
   return SOURCE[face];
 }
 
 /**
- * `destinationIndicesFor(face)[i]` is where the sticker currently at index `i`
- * ends up after one clockwise turn — the inverse of the above.
+ * Build a face's permutation from the cube's geometry.
+ *
+ * Every sticker in the turning layer is carried round with its cubie: rotate
+ * the cubie's position and the sticker's normal, and whichever facelet now sits
+ * there is where it went. Works for any size without a table per size.
  */
-export function destinationIndicesFor(face: Face): readonly number[] {
-  const src = SOURCE[face];
-  const dest = new Array<number>(FACELET_COUNT);
-  for (let i = 0; i < FACELET_COUNT; i++) dest[src[i]] = i;
+function buildPermutation(face: Face, size: CubeSize): number[] {
+  const { facelets } = geometryFor(size);
+  const source = facelets.map((_, i) => i);
+
+  for (const sticker of facelets) {
+    if (!isInLayer(sticker.position, face, size)) continue;
+    const destination = faceletIndexAt(
+      rotateAboutFace(sticker.position, face),
+      rotateAboutFace(sticker.normal, face),
+      size,
+    );
+    if (destination === undefined) {
+      throw new Error(`Turning ${face} sent facelet ${sticker.index} off the cube`);
+    }
+    source[destination] = sticker.index;
+  }
+
+  return source;
+}
+
+const PERMUTATIONS = new Map<string, readonly number[]>();
+
+/**
+ * `sourceIndicesFor(face, size)[i]` is the facelet whose color ends up at index
+ * `i` after one clockwise turn. Exposed so the 3D view can be checked against
+ * the same permutation the engine actually uses.
+ */
+export function sourceIndicesFor(face: Face, size: CubeSize = 3): readonly number[] {
+  const key = `${size}${face}`;
+  const cached = PERMUTATIONS.get(key);
+  if (cached) return cached;
+  const built = buildPermutation(face, size);
+  PERMUTATIONS.set(key, built);
+  return built;
+}
+
+/**
+ * `destinationIndicesFor(face, size)[i]` is where the sticker currently at
+ * index `i` ends up after one clockwise turn — the inverse of the above.
+ */
+export function destinationIndicesFor(face: Face, size: CubeSize = 3): readonly number[] {
+  const src = sourceIndicesFor(face, size);
+  const dest = new Array<number>(src.length);
+  for (let i = 0; i < src.length; i++) dest[src[i]] = i;
   return dest;
 }
 
 /** Apply a single quarter turn (clockwise) of a face. Returns a new array. */
-function quarterTurn(facelets: Facelets, face: Face): Facelets {
-  const src = SOURCE[face];
-  const next: Facelets = new Array(FACELET_COUNT);
-  for (let i = 0; i < FACELET_COUNT; i++) {
+function quarterTurn(facelets: Facelets, face: Face, size: CubeSize): Facelets {
+  const src = sourceIndicesFor(face, size);
+  const next: Facelets = new Array(src.length);
+  for (let i = 0; i < src.length; i++) {
     next[i] = facelets[src[i]];
   }
   return next;
@@ -136,9 +187,10 @@ function quarterTurn(facelets: Facelets, face: Face): Facelets {
 
 /** Apply one move (1, 2 or 3 quarter turns). Returns a new array. */
 export function applyMove(facelets: Facelets, move: Move): Facelets {
+  const size = sizeOf(facelets);
   let result = facelets;
   for (let i = 0; i < move.turns; i++) {
-    result = quarterTurn(result, move.face);
+    result = quarterTurn(result, move.face, size);
   }
   return result;
 }
@@ -150,10 +202,12 @@ export function applyMoves(facelets: Facelets, moves: Move[]): Facelets {
 
 /** True when every face is a single color. */
 export function isSolved(facelets: Facelets): boolean {
+  const size = sizeOf(facelets);
+  const perFace = stickersPerFace(size);
   for (const face of FACES) {
-    const base = FACE_OFFSET[face];
+    const base = faceOffsetFor(face, size);
     const color = facelets[base];
-    for (let i = 1; i < 9; i++) {
+    for (let i = 1; i < perFace; i++) {
       if (facelets[base + i] !== color) return false;
     }
   }
@@ -164,8 +218,9 @@ export function isSolved(facelets: Facelets): boolean {
  * Which facelet indices physically sit on a given face's layer, including the
  * adjacent strips. Used by the 3D view to decide which cubies to rotate.
  */
-export function faceletsAffectedBy(face: Face): number[] {
-  return CYCLES[face].flat();
+export function faceletsAffectedBy(face: Face, size: CubeSize = 3): number[] {
+  const src = sourceIndicesFor(face, size);
+  return src.map((from, to) => (from === to ? -1 : to)).filter((i) => i >= 0);
 }
 
 /** A solved cube. Re-exported here so callers need only import from state. */

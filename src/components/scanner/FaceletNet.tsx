@@ -15,7 +15,10 @@ import {
   FACE_COLORS,
   FACE_COLOR_NAMES,
   FACE_NAMES,
-  FACE_OFFSET,
+  centerIndexFor,
+  faceOffsetFor,
+  sizeOf,
+  stickersPerFace,
   type Color,
   type Face,
   type Facelets,
@@ -67,6 +70,11 @@ export default function FaceletNet({
 }: FaceletNetProps) {
   const [brush, setBrush] = useState<Color>('U');
 
+  // The net reads its shape from the cube it was handed, so a 2x2 and a 3x3
+  // both come out right without the caller having to say which it is.
+  const size = sizeOf(facelets);
+  const perFace = stickersPerFace(size);
+
   const uncertainSet = new Set(uncertain);
   const invalidSet = new Set(invalid);
 
@@ -84,14 +92,20 @@ export default function FaceletNet({
           return (
             <div
               key={face}
-              className="grid grid-cols-3 gap-[2px] sm:gap-[3px]"
-              style={{ gridColumn: column, gridRow: row }}
+              className="grid gap-[2px] sm:gap-[3px]"
+              style={{
+                gridColumn: column,
+                gridRow: row,
+                gridTemplateColumns: `repeat(${size}, minmax(0, 1fr))`,
+              }}
               aria-label={`${FACE_NAMES[face]} face`}
             >
-              {Array.from({ length: 9 }, (_, i) => {
-                const index = FACE_OFFSET[face] + i;
+              {Array.from({ length: perFace }, (_, i) => {
+                const index = faceOffsetFor(face, size) + i;
                 const color = facelets[index];
-                const isCenter = i === 4;
+                // An even-sized cube has no centre, so every sticker is fair
+                // game to edit.
+                const isCenter = centerIndexFor(face, size) === index;
                 const isUncertain = uncertainSet.has(index);
                 const isInvalid = invalidSet.has(index);
 

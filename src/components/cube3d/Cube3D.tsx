@@ -14,15 +14,15 @@ import { Canvas, useFrame, type ThreeElements } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import {
-  CUBIE_POSITIONS,
   DIRECTIONS,
   FACE_AXIS,
   cubieKey,
   faceletIndexAt,
+  geometryFor,
   isInLayer,
   type Vec3,
 } from '@/lib/cube/geometry';
-import { type Face, type Facelets } from '@/lib/cube/types';
+import { sizeOf, type CubeSize, type Face, type Facelets } from '@/lib/cube/types';
 import { useCubeStore, selectCurrentFacelets } from '@/store/cubeStore';
 
 /** Spacing between cubie centers; slightly over 1 so the gaps read as seams. */
@@ -44,6 +44,7 @@ function quaternionFor(normal: Vec3): THREE.Quaternion {
 interface CubieProps {
   position: Vec3;
   facelets: Facelets;
+  size: CubeSize;
   bodyMaterial: THREE.Material;
   bodyGeometry: THREE.BufferGeometry;
   stickerGeometry: THREE.BufferGeometry;
@@ -53,6 +54,7 @@ interface CubieProps {
 function Cubie({
   position,
   facelets,
+  size,
   bodyMaterial,
   bodyGeometry,
   stickerGeometry,
@@ -68,7 +70,7 @@ function Cubie({
     <group position={world}>
       <mesh geometry={bodyGeometry} material={bodyMaterial} />
       {DIRECTIONS.map(({ normal }) => {
-        const index = faceletIndexAt(position, normal);
+        const index = faceletIndexAt(position, normal, size);
         if (index === undefined) return null;
 
         const color = facelets[index];
@@ -96,6 +98,7 @@ function CubeModel() {
   // Scanning starts on an arbitrary face, so the sticker colours come from the
   // scan rather than from the classic scheme.
   const faceColors = useCubeStore((s) => s.faceColors);
+  const size = sizeOf(facelets);
 
   const pivotRef = useRef<THREE.Group>(null);
 
@@ -144,18 +147,21 @@ function CubeModel() {
   });
 
   const { turning, still } = useMemo(() => {
-    if (!animation) return { turning: [] as Vec3[], still: CUBIE_POSITIONS as readonly Vec3[] };
+    const cubies = geometryFor(size).cubies;
+    if (!animation) return { turning: [] as Vec3[], still: cubies };
     const face = animation.move.face;
     return {
-      turning: CUBIE_POSITIONS.filter((p) => isInLayer(p, face)),
-      still: CUBIE_POSITIONS.filter((p) => !isInLayer(p, face)),
+      turning: cubies.filter((p) => isInLayer(p, face, size)),
+      still: cubies.filter((p) => !isInLayer(p, face, size)),
     };
-  }, [animation]);
+  }, [animation, size]);
 
-  const shared = { bodyGeometry, bodyMaterial, stickerGeometry, stickerMaterials, facelets };
+  const shared = { bodyGeometry, bodyMaterial, stickerGeometry, stickerMaterials, facelets, size };
 
   return (
-    <group>
+    // Scale so a 2x2 fills the same space on screen as a 3x3, rather than
+    // sitting small in the middle of a view framed for a bigger cube.
+    <group scale={3 / size}>
       <group ref={pivotRef}>
         {turning.map((position) => (
           <Cubie key={cubieKey(position)} position={position} {...shared} />

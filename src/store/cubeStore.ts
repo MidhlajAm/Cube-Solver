@@ -14,9 +14,14 @@ import { applyMoves, isSolved, solvedFacelets } from '@/lib/cube/state';
 import { parseMoves } from '@/lib/cube/notation';
 import { invertMove } from '@/lib/cube/notation';
 import {
+  DEFAULT_SIZE,
   faceletsFromString,
+  faceletCountFor,
+  faceOffsetFor,
+  stickersPerFace,
   FACES,
   FACE_COLORS,
+  type CubeSize,
   type Color,
   type Face,
   type Facelets,
@@ -39,6 +44,14 @@ export interface Animation {
 
 interface CubeState {
   phase: Phase;
+
+  /** Which cube is being solved. Changing it starts over. */
+  size: CubeSize;
+  /**
+   * Whether the scanner takes each face by itself. Kept here rather than in the
+   * scanner so the choice survives closing and reopening the camera.
+   */
+  autoCapture: boolean;
 
   /** The cube as scanned or hand-edited: the starting position. */
   scramble: Facelets;
@@ -74,6 +87,8 @@ interface CubeState {
 
   // Actions
   setPhase: (phase: Phase) => void;
+  setSize: (size: CubeSize) => void;
+  setAutoCapture: (on: boolean) => void;
   setScramble: (
     facelets: Facelets,
     meta?: {
@@ -132,7 +147,10 @@ function clearAnimationTimer(): void {
 export const useCubeStore = create<CubeState>((set, get) => ({
   phase: 'scan',
 
-  scramble: solvedFacelets(),
+  size: DEFAULT_SIZE,
+  autoCapture: true,
+
+  scramble: solvedFacelets(DEFAULT_SIZE),
   confidence: null,
   uncertain: [],
   captured: {},
@@ -140,7 +158,7 @@ export const useCubeStore = create<CubeState>((set, get) => ({
   faceColors: { ...FACE_COLORS },
   scanNotice: null,
 
-  validation: validateFacelets(solvedFacelets()),
+  validation: validateFacelets(solvedFacelets(DEFAULT_SIZE)),
 
   solution: null,
   moveIndex: 0,
@@ -152,6 +170,30 @@ export const useCubeStore = create<CubeState>((set, get) => ({
   error: null,
 
   setPhase: (phase) => set({ phase }),
+
+  setSize: (size) => {
+    if (get().size === size) return;
+    clearAnimationTimer();
+    const fresh = solvedFacelets(size);
+    set({
+      size,
+      scramble: fresh,
+      confidence: null,
+      uncertain: [],
+      captured: {},
+      faceColors: { ...FACE_COLORS },
+      scanNotice: null,
+      validation: validateFacelets(fresh),
+      solution: null,
+      moveIndex: 0,
+      animation: null,
+      playing: false,
+      phase: 'scan',
+      error: null,
+    });
+  },
+
+  setAutoCapture: (autoCapture) => set({ autoCapture }),
 
   setScramble: (facelets, meta) =>
     set({
@@ -184,13 +226,15 @@ export const useCubeStore = create<CubeState>((set, get) => ({
   },
 
   captureFace: (face, colors, confidence) => {
+    const size = get().size;
+    const perFace = stickersPerFace(size);
     const scramble = [...get().scramble];
-    const base = FACES.indexOf(face) * 9;
-    for (let i = 0; i < 9; i++) scramble[base + i] = colors[i];
+    const base = faceOffsetFor(face, size);
+    for (let i = 0; i < perFace; i++) scramble[base + i] = colors[i];
 
-    const nextConfidence = get().confidence ?? new Array(54).fill(1);
+    const nextConfidence = get().confidence ?? new Array(faceletCountFor(size)).fill(1);
     const merged = [...nextConfidence];
-    for (let i = 0; i < 9; i++) merged[base + i] = confidence[i];
+    for (let i = 0; i < perFace; i++) merged[base + i] = confidence[i];
 
     set({
       scramble,
@@ -204,14 +248,15 @@ export const useCubeStore = create<CubeState>((set, get) => ({
 
   resetScan: () => {
     clearAnimationTimer();
+    const fresh = solvedFacelets(get().size);
     set({
-      scramble: solvedFacelets(),
+      scramble: fresh,
       confidence: null,
       uncertain: [],
       captured: {},
       faceColors: { ...FACE_COLORS },
       scanNotice: null,
-      validation: validateFacelets(solvedFacelets()),
+      validation: validateFacelets(fresh),
       solution: null,
       moveIndex: 0,
       animation: null,
@@ -274,7 +319,7 @@ export const useCubeStore = create<CubeState>((set, get) => ({
   loadRandomCube: async () => {
     set({ error: null });
     try {
-      const facelets = faceletsFromString(await randomCube());
+      const facelets = faceletsFromString(await randomCube(get().size));
       get().setScramble(facelets);
       set({ captured: Object.fromEntries(FACES.map((f) => [f, true])), phase: 'verify' });
     } catch (error) {

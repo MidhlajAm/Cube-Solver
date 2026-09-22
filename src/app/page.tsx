@@ -14,6 +14,7 @@ import FaceletNet from '@/components/scanner/FaceletNet';
 import MovePlayer from '@/components/player/MovePlayer';
 import { selectCurrentFacelets, useCubeStore } from '@/store/cubeStore';
 import type { ValidationResult } from '@/lib/cube/validate';
+import { SIZE_LABELS, SUPPORTED_SIZES, type CubeSize } from '@/lib/cube/types';
 
 // Three.js is a large dependency and needs the DOM, so it is loaded on the
 // client only and never blocks the first paint.
@@ -44,6 +45,8 @@ export default function Page() {
   const faceColors = useCubeStore((s) => s.faceColors);
   const scanNotice = useCubeStore((s) => s.scanNotice);
   const clearScanNotice = useCubeStore((s) => s.clearScanNotice);
+  const size = useCubeStore((s) => s.size);
+  const setSize = useCubeStore((s) => s.setSize);
   const currentFacelets = useCubeStore(selectCurrentFacelets);
 
   const [scanning, setScanning] = useState(false);
@@ -89,7 +92,12 @@ export default function Page() {
   return (
     <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-5 px-4 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-5">
       <header className="flex items-baseline justify-between gap-3">
-        <h1 className="text-xl font-bold tracking-tight sm:text-2xl">Cube Solver</h1>
+        <h1 className="text-xl font-bold tracking-tight sm:text-2xl">
+          Cube Solver
+          {phase !== 'scan' && (
+            <span className="ml-2 text-sm font-medium text-slate-500">{SIZE_LABELS[size]}</span>
+          )}
+        </h1>
         <SolverBadge status={solverStatus} />
       </header>
 
@@ -112,6 +120,8 @@ export default function Page() {
 
       {phase === 'scan' && (
         <Intro
+          size={size}
+          onSize={setSize}
           onScan={() => setScanning(true)}
           onManual={() => setPhase('verify')}
           onRandom={() => void loadRandomCube()}
@@ -294,10 +304,14 @@ function SolverBadge({ status }: { status: string }) {
 }
 
 function Intro({
+  size,
+  onSize,
   onScan,
   onManual,
   onRandom,
 }: {
+  size: CubeSize;
+  onSize: (size: CubeSize) => void;
   onScan: () => void;
   onManual: () => void;
   onRandom: () => void;
@@ -315,6 +329,25 @@ function Intro({
           prompts as you turn the cube. You&apos;ll get a chance to fix anything it
           misreads, then watch the solution play out move by move on a 3D cube.
         </p>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <span className="text-xs font-medium text-slate-400">Which cube?</span>
+        <div role="group" aria-label="Cube size" className="flex rounded-xl bg-slate-900 p-1">
+          {SUPPORTED_SIZES.map((option) => (
+            <button
+              key={option}
+              type="button"
+              onClick={() => onSize(option)}
+              aria-pressed={size === option}
+              className={`min-h-11 flex-1 rounded-lg text-sm font-semibold transition ${
+                size === option ? 'bg-slate-700 text-white' : 'text-slate-400'
+              }`}
+            >
+              {SIZE_LABELS[option]}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div className="flex flex-col gap-3">

@@ -1,21 +1,26 @@
 /**
  * The bridge between facelet indices and 3D space.
  *
- * Coordinates: +x right, +y up, +z toward the viewer (front). Each of the 26
- * visible cubies sits at a position in {-1, 0, 1}^3 (the 27th, the core, is
- * never drawn). Every facelet maps to one cubie and an outward normal.
+ * Coordinates: +x right, +y up, +z toward the viewer (front). A cubie's
+ * coordinate along each axis is `i - (size - 1) / 2`, which puts the cube's
+ * centre at the origin for any size — whole numbers on a 3x3, halves on a 2x2.
+ * Every facelet maps to one cubie and an outward normal.
  *
  * The layout of each face follows the unfolded net described in types.ts, so
  * e.g. the U face's first row is the one adjacent to B, while the D face's
  * first row is the one adjacent to F.
+ *
+ * This is also where the move engine gets its permutations from: turning a face
+ * is a rotation of the cubies in that layer, and where each sticker lands falls
+ * straight out of the coordinates. See state.ts.
  */
 
-import { FACES, FACE_OFFSET, type Face } from './types';
+import { FACES, faceOffsetFor, stickersPerFace, type CubeSize, type Face } from './types';
 
 export type Vec3 = readonly [number, number, number];
 
 export interface FaceletGeometry {
-  /** Facelet index, 0..53. */
+  /** Facelet index within its cube. */
   index: number;
   /** Which face it belongs to. */
   face: Face;
@@ -34,94 +39,123 @@ const FACE_NORMALS: Record<Face, Vec3> = {
   B: [0, 0, -1],
 };
 
+/** Distance from the centre to the outer layer, in cubie coordinates. */
+export function extentOf(size: CubeSize): number {
+  return (size - 1) / 2;
+}
+
 /**
  * Position of a sticker within its face, given the row and column it occupies
  * when that face is read in the net's reading order.
  */
-function positionFor(face: Face, row: number, column: number): Vec3 {
+export function positionFor(face: Face, row: number, column: number, size: CubeSize): Vec3 {
+  const m = extentOf(size);
   switch (face) {
     // Seen from above, with the back edge at the top of the net.
     case 'U':
-      return [column - 1, 1, row - 1];
+      return [column - m, m, row - m];
     // Seen from below, with the front edge at the top of the net.
     case 'D':
-      return [column - 1, -1, 1 - row];
+      return [column - m, -m, m - row];
     case 'F':
-      return [column - 1, 1 - row, 1];
+      return [column - m, m - row, m];
     // Seen from behind: the net's left column is the cube's right side.
     case 'B':
-      return [1 - column, 1 - row, -1];
+      return [m - column, m - row, -m];
     // Seen from the right: the net's left column touches the front face.
     case 'R':
-      return [1, 1 - row, 1 - column];
+      return [m, m - row, m - column];
     // Seen from the left: the net's right column touches the front face.
     case 'L':
-      return [-1, 1 - row, column - 1];
+      return [-m, m - row, column - m];
   }
 }
 
-/** Geometry for all 54 facelets, indexed by facelet number. */
-export const FACELET_GEOMETRY: readonly FaceletGeometry[] = (() => {
-  const out: FaceletGeometry[] = [];
-  for (const face of FACES) {
-    for (let i = 0; i < 9; i++) {
-      out.push({
-        index: FACE_OFFSET[face] + i,
-        face,
-        position: positionFor(face, Math.floor(i / 3), i % 3),
-        normal: FACE_NORMALS[face],
-      });
-    }
-  }
-  return out.sort((a, b) => a.index - b.index);
-})();
-
-/** The 26 drawn cubie positions. */
-export const CUBIE_POSITIONS: readonly Vec3[] = (() => {
-  const out: Vec3[] = [];
-  for (let x = -1; x <= 1; x++) {
-    for (let y = -1; y <= 1; y++) {
-      for (let z = -1; z <= 1; z++) {
-        if (x === 0 && y === 0 && z === 0) continue;
-        out.push([x, y, z]);
-      }
-    }
-  }
-  return out;
-})();
-
-/** Stable string key for a cubie position. */
+/** Stable string key for a cubie position or a normal. */
 export function cubieKey(position: Vec3): string {
   return position.join(',');
 }
 
-/** Facelets attached to each cubie, keyed by cubie position. */
-export const FACELETS_BY_CUBIE: ReadonlyMap<string, FaceletGeometry[]> = (() => {
+/** Everything the renderer and the move engine need about one cube size. */
+export interface CubeGeometry {
+  size: number;
+  facelets: readonly FaceletGeometry[];
+  /** The drawn cubies: every one except those fully inside the cube. */
+  cubies: readonly Vec3[];
+  /** "position|normal" to facelet index; absent for hidden faces. */
+  faceletAt: ReadonlyMap<string, number>;
+}
+
+function build(size: CubeSize): CubeGeometry {
+  const facelets: FaceletGeometry[] = [];
+  for (const face of FACES) {
+    for (let i = 0; i < stickersPerFace(size); i++) {
+      facelets.push({
+        index: faceOffsetFor(face, size) + i,
+        face,
+        position: positionFor(face, Math.floor(i / size), i % size, size),
+        normal: FACE_NORMALS[face],
+      });
+    }
+  }
+  facelets.sort((a, b) => a.index - b.index);
+
+  const m = extentOf(size);
+  const cubies: Vec3[] = [];
+  for (let x = 0; x < size; x++) {
+    for (let y = 0; y < size; y++) {
+      for (let z = 0; z < size; z++) {
+        const position: Vec3 = [x - m, y - m, z - m];
+        // A cubie with no coordinate at the surface is never visible.
+        if (position.every((c) => Math.abs(c) !== m)) continue;
+        cubies.push(position);
+      }
+    }
+  }
+
+  const faceletAt = new Map<string, number>();
+  for (const geometry of facelets) {
+    faceletAt.set(`${cubieKey(geometry.position)}|${cubieKey(geometry.normal)}`, geometry.index);
+  }
+
+  return { size, facelets, cubies, faceletAt };
+}
+
+const CACHE = new Map<number, CubeGeometry>();
+
+/** Geometry for one cube size, built once and reused. */
+export function geometryFor(size: CubeSize): CubeGeometry {
+  const cached = CACHE.get(size);
+  if (cached) return cached;
+  const built = build(size);
+  CACHE.set(size, built);
+  return built;
+}
+
+/** Geometry for all facelets of a 3x3, indexed by facelet number. */
+export const FACELET_GEOMETRY: readonly FaceletGeometry[] = geometryFor(3).facelets;
+
+/** The 26 drawn cubie positions of a 3x3. */
+export const CUBIE_POSITIONS: readonly Vec3[] = geometryFor(3).cubies;
+
+/** Facelets attached to each cubie of a cube, keyed by cubie position. */
+export function faceletsByCubie(size: CubeSize): ReadonlyMap<string, FaceletGeometry[]> {
   const map = new Map<string, FaceletGeometry[]>();
-  for (const geometry of FACELET_GEOMETRY) {
+  for (const geometry of geometryFor(size).facelets) {
     const key = cubieKey(geometry.position);
     const list = map.get(key);
     if (list) list.push(geometry);
     else map.set(key, [geometry]);
   }
   return map;
-})();
+}
 
-/**
- * Which facelet sits on a given cubie, facing a given direction — the lookup
- * the renderer needs to color each sticker. Undefined for internal faces.
- */
-export const FACELET_AT: ReadonlyMap<string, number> = (() => {
-  const map = new Map<string, number>();
-  for (const geometry of FACELET_GEOMETRY) {
-    map.set(`${cubieKey(geometry.position)}|${cubieKey(geometry.normal)}`, geometry.index);
-  }
-  return map;
-})();
+/** Facelets attached to each cubie of a 3x3. */
+export const FACELETS_BY_CUBIE: ReadonlyMap<string, FaceletGeometry[]> = faceletsByCubie(3);
 
 /** Facelet index on `position` facing `normal`, or undefined if hidden. */
-export function faceletIndexAt(position: Vec3, normal: Vec3): number | undefined {
-  return FACELET_AT.get(`${cubieKey(position)}|${cubieKey(normal)}`);
+export function faceletIndexAt(position: Vec3, normal: Vec3, size: CubeSize = 3): number | undefined {
+  return geometryFor(size).faceletAt.get(`${cubieKey(position)}|${cubieKey(normal)}`);
 }
 
 /** The six outward directions, for iterating a cubie's faces. */
@@ -129,6 +163,11 @@ export const DIRECTIONS: readonly { normal: Vec3; face: Face }[] = FACES.map((fa
   face,
   normal: FACE_NORMALS[face],
 }));
+
+/** The outward normal of a face. */
+export function normalOf(face: Face): Vec3 {
+  return FACE_NORMALS[face];
+}
 
 /** Negating a zero coordinate yields -0, which compares unequal to 0. */
 function unsign(n: number): number {
@@ -168,25 +207,32 @@ export const FACE_AXIS: Record<Face, { axis: 'x' | 'y' | 'z'; sign: 1 | -1 }> = 
 };
 
 /** The coordinate a cubie must have to be part of a given face's layer. */
-export function isInLayer(position: Vec3, face: Face): boolean {
+export function isInLayer(position: Vec3, face: Face, size: CubeSize = 3): boolean {
+  const m = extentOf(size);
   const [x, y, z] = position;
   switch (face) {
     case 'U':
-      return y === 1;
+      return y === m;
     case 'D':
-      return y === -1;
+      return y === -m;
     case 'R':
-      return x === 1;
+      return x === m;
     case 'L':
-      return x === -1;
+      return x === -m;
     case 'F':
-      return z === 1;
+      return z === m;
     case 'B':
-      return z === -1;
+      return z === -m;
   }
 }
 
 /** The cubies that move when a face turns. */
-export function cubiesInLayer(face: Face): Vec3[] {
-  return CUBIE_POSITIONS.filter((position) => isInLayer(position, face));
+export function cubiesInLayer(face: Face, size: CubeSize = 3): Vec3[] {
+  return geometryFor(size).cubies.filter((position) => isInLayer(position, face, size));
+}
+
+/** The eight corner cubies, which are the only pieces a 2x2 has. */
+export function cornerPositions(size: CubeSize): Vec3[] {
+  const m = extentOf(size);
+  return geometryFor(size).cubies.filter((p) => p.every((c) => Math.abs(c) === m));
 }
