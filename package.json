@@ -2,6 +2,7 @@
   "name": "rubics_cube",
   "version": "0.1.0",
   "private": true,
+  "license": "GPL-3.0-or-later",
   "scripts": {
     "dev": "next dev",
     "dev:tunnel": "concurrently -n next,tunnel -c cyan,magenta \"next dev\" \"cloudflared tunnel --url http://localhost:3000\"",
